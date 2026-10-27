@@ -1,0 +1,62 @@
+/* Ciak — stampa / PDF in formato sceneggiatura standard */
+
+#print-root { display: none; }
+
+@media print {
+  /* margini standard: 1,5" a sinistra e 1" a destra; parte del margine è nel contenuto
+     (padding di .pr-script) così i numeri di scena non vengono tagliati */
+  @page {
+    margin: 1in 0.5in 0.8in 0.75in;
+    @top-right {
+      content: counter(page) ".";
+      font-family: "Courier Prime", "Courier New", Courier, monospace;
+      font-size: 12pt;
+      vertical-align: bottom;
+      padding: 0 0.5in 0.25in 0;
+    }
+  }
+  /* il frontespizio non si conta: la prima pagina del copione è la 1 */
+  @page title {
+    margin: 1in;
+    counter-reset: page 0;
+    @top-right { content: none; }
+  }
+
+  html, body { background: #fff !important; color: #000 !important; }
+  body > *:not(#print-root) { display: none !important; }
+
+  #print-root {
+    display: block !important;
+    font-family: "Courier Prime", "Courier New", Courier, monospace;
+    font-size: 12pt;
+    line-height: 12pt;
+    color: #000;
+  }
+
+  .pr-title { page: title; position: relative; height: 8.9in; break-after: page; }
+  .pr-main { position: absolute; top: 2.9in; left: 0; right: 0; text-align: center; }
+  .pr-t { text-transform: uppercase; text-decoration: underline; }
+  .pr-c { margin-top: 36pt; }
+  .pr-a { margin-top: 12pt; }
+  .pr-s { margin-top: 36pt; }
+  .pr-foot { position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between; align-items: flex-end; gap: 1in; }
+  .pr-contact { white-space: pre-line; }
+  .pr-date { text-align: right; }
+
+  .pr-script { padding: 0 0.5in 0 0.75in; }
+  .pr-script .el { position: relative; margin: 12pt 0 0; white-space: pre-wrap; overflow-wrap: break-word; orphans: 2; widows: 2; }
+  .pr-script .el:first-child { margin-top: 0; }
+  .pr-script .el-scene { margin-top: 24pt; font-weight: 700; text-transform: uppercase; break-after: avoid; }
+  .pr-script .el-scene:first-child { margin-top: 0; }
+  .pr-script .el-character { margin-left: 2.2in; text-transform: uppercase; break-after: avoid; }
+  .pr-script .el-parenthetical { margin: 0 0 0 1.6in; max-width: 2.3in; break-after: avoid; }
+  .pr-script .el-dialogue { margin: 0 0 0 1in; max-width: 3.5in; }
+  .pr-script .el-transition { text-align: right; text-transform: uppercase; break-before: avoid; }
+  .pr-script .el-shot,
+  .pr-script .el-subheader,
+  .pr-script .el-intercut { font-weight: 700; text-transform: uppercase; break-after: avoid; }
+  .pr-script.show-numbers .el-scene::before,
+  .pr-script.show-numbers .el-scene::after { content: attr(data-num); position: absolute; top: 0; }
+  .pr-script.show-numbers .el-scene::before { left: -0.6in; }
+  .pr-script.show-numbers .el-scene::after { right: -0.45in; }
+}

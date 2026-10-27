@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#e0662d"/>
+  <g><defs><clipPath id="bar"><rect width="272" height="46" rx="10"/></clipPath></defs>
+  <rect x="120" y="244" width="272" height="164" rx="22" fill="#fff"/>
+  <rect x="154" y="290" width="150" height="15" rx="7.5" fill="#e0662d" opacity=".42"/>
+  <rect x="154" y="323" width="204" height="15" rx="7.5" fill="#e0662d" opacity=".42"/>
+  <rect x="154" y="356" width="118" height="15" rx="7.5" fill="#e0662d" opacity=".42"/>
+  <g transform="translate(120 194)"><rect width="272" height="46" rx="10" fill="#26211d"/><path fill="#fff" d="M22 0h34L34 46H0zM90 0h34l-22 46H68zM158 0h34l-22 46h-34zM226 0h34l-22 46h-34z" clip-path="url(#bar)"/></g>
+  <g transform="rotate(-17 124 190)"><g transform="translate(120 140)"><rect width="272" height="46" rx="10" fill="#26211d"/><path fill="#fff" d="M22 0h34L34 46H0zM90 0h34l-22 46H68zM158 0h34l-22 46h-34zM226 0h34l-22 46h-34z" clip-path="url(#bar)"/></g></g></g>
+</svg>
