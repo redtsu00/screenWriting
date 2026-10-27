@@ -93,6 +93,75 @@
     });
   }
 
+  /* ---------- menu a comparsa (sul telefono diventa un foglio dal basso) ---------- */
+
+  let openPop = null;
+  function closePop() {
+    if (!openPop) return;
+    openPop.remove();
+    openPop = null;
+    document.removeEventListener('mousedown', onPopOutside, true);
+    document.removeEventListener('keydown', onPopKey, true);
+    window.removeEventListener('resize', closePop);
+    window.removeEventListener('scroll', closePop, true);
+  }
+  function onPopOutside(e) { if (openPop && !openPop.contains(e.target)) closePop(); }
+  function onPopKey(e) { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePop(); } }
+
+  // items: [{ group }] | [{ chips: [...] }] | [{ label, icon | dot, hint, checked, danger, disabled, onClick }]
+  function menuNode(it, close) {
+    if (!it) return null;
+    if (it.group) return h('div', { class: 'pop-group', title: it.group }, it.group);
+    if (it.chips) {
+      return h('div', { class: 'pop-chips' }, it.chips.map((c) => h('button', {
+        type: 'button', class: 'pop-chip' + (c.checked ? ' checked' : ''), title: c.title || c.label,
+        onmousedown: (e) => e.preventDefault(),
+        onclick: () => { close(); c.onClick(); }
+      }, h('span', { class: 'tdot', dataset: { type: c.dot } }), c.label)));
+    }
+    return h('button', {
+      type: 'button', role: 'menuitem',
+      class: 'pop-item' + (it.danger ? ' danger' : '') + (it.checked ? ' checked' : ''),
+      disabled: !!it.disabled,
+      onmousedown: (e) => e.preventDefault(),
+      onclick: () => { close(); it.onClick(); }
+    },
+    it.dot ? h('span', { class: 'tdot', dataset: { type: it.dot } }) : (it.icon ? U.icon(it.icon, 17) : null),
+    h('span', null, it.label),
+    it.checked ? h('span', { class: 'pop-check' }, U.icon('check', 15)) : (it.hint && !U.isTouch() ? h('span', { class: 'pop-hint' }, it.hint) : null));
+  }
+
+  // opts.place: 'below' (predefinito) o 'right' (accanto all'elemento, per menu aperti dal margine)
+  function popMenu(anchor, items, title, opts = {}) {
+    closePop();
+    if (U.isMobile()) {
+      const s = sheet({ title: title || 'Azioni', className: 'menu-sheet', body: h('div', { class: 'menu' }, items.map((it) => menuNode(it, () => s.close()))) });
+      return;
+    }
+    const pop = h('div', { class: 'pop', role: 'menu' }, items.map((it) => menuNode(it, closePop)));
+    document.body.appendChild(pop);
+    const r = anchor.getBoundingClientRect();
+    const pw = pop.offsetWidth, ph = pop.offsetHeight;
+    let left, top;
+    if (opts.place === 'right') {
+      left = U.clamp(r.right + 6, 8, window.innerWidth - pw - 8);
+      top = U.clamp(r.top - 8, 8, Math.max(8, window.innerHeight - ph - 8));
+    } else {
+      left = U.clamp(r.left, 8, window.innerWidth - pw - 8);
+      top = r.bottom + 6;
+      if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 6);
+    }
+    pop.style.left = left + 'px';
+    pop.style.top = top + 'px';
+    openPop = pop;
+    setTimeout(() => {
+      document.addEventListener('mousedown', onPopOutside, true);
+      document.addEventListener('keydown', onPopKey, true);
+      window.addEventListener('resize', closePop);
+      window.addEventListener('scroll', closePop, true);
+    }, 0);
+  }
+
   /* ---------- viste ---------- */
 
   function show(v) {
@@ -368,6 +437,9 @@
       ['↵ su riga vuota', 'Cambia tipo (es. Azione → Personaggio)'],
       ['⇥ Tab / ⇧⇥', 'Cambia il tipo della riga corrente'],
       ['⌥1 … ⌥9', 'Scena, Azione, Personaggio, Parentetica, Dialogo, Transizione, Inquadratura, Sotto-scena, Intercut'],
+      ['Seleziona e ⌫', 'Seleziona più righe (o una scena intera) trascinando, poi cancella, taglia, copia o incolla'],
+      [`⌥↑ / ⌥↓`, 'Sposta la riga (o le righe selezionate) su o giù'],
+      [`${mod}⇧⌫`, 'Elimina la riga (o le righe selezionate)'],
       [`${mod}Z / ⇧${mod}Z`, 'Annulla / Ripeti'],
       [`${mod}P`, 'Esporta PDF'],
       ['↑ ↓ / Esc', 'Scegli un suggerimento / chiudi i suggerimenti']
@@ -380,6 +452,8 @@
         h('dl', { class: 'help-els' }, els.map(([it, en, d]) => [h('dt', null, it, h('span', null, en)), h('dd', null, d)])),
         h('h3', null, 'Tasti rapidi'),
         h('dl', { class: 'help-keys' }, keys.map(([k, d]) => [h('dt', null, h('kbd', null, k)), h('dd', null, d)])),
+        h('h3', null, 'Eliminare, duplicare, spostare'),
+        h('p', null, 'L\'etichetta grigia a sinistra della riga (o il pulsante ⋯ nella barra degli elementi) apre il menu della riga: cambia tipo, elimina, duplica, sposta su/giù, e le stesse azioni per l\'intera scena. Anche ogni scena nell\'elenco a sinistra ha il suo menu ⋯. Dopo ogni eliminazione compare "Annulla".'),
         h('h3', null, 'Idee & Scene e Flow chart'),
         h('p', null, 'Nella scheda Idee annoti idee, scene da scrivere, personaggi e note. Trascina le schede con la maniglia ⠿ per riordinarle o spostarle in un\'altra colonna.'),
         h('p', null, 'Nel Flow chart le stesse schede diventano un diagramma: trascina il pallino sotto una scheda fino a un\'altra per collegarle (oppure seleziona la scheda e tocca "Collega"). Tocca una freccia per darle un\'etichetta. "Importa dal copione" crea una scheda per ogni scena già scritta; "Scrivi" su una scheda scena la aggiunge in fondo al copione.')),
@@ -455,6 +529,8 @@
     }
   }
 
-  window.Ciak.App = { show, sheet, confirm: confirmBox, prompt: promptBox, closeSidebar, printPDF };
+  function refresh() { if (view) show(view); }
+
+  window.Ciak.App = { show, refresh, sheet, popMenu, confirm: confirmBox, prompt: promptBox, closeSidebar, printPDF };
   document.addEventListener('DOMContentLoaded', init);
 })();

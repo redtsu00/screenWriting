@@ -73,16 +73,27 @@
     .replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase() || 'copione';
 
   let toastTimer = null;
-  U.toast = function (msg, ms = 2600) {
+  // U.toast('Testo') oppure U.toast('Testo', { action: 'Annulla', onAction: fn })
+  U.toast = function (msg, opts) {
+    const o = typeof opts === 'number' ? { ms: opts } : (opts || {});
     let t = document.getElementById('toast');
     if (!t) {
       t = U.h('div', { id: 'toast', role: 'status', 'aria-live': 'polite' });
       document.body.appendChild(t);
     }
-    t.textContent = msg;
+    t.textContent = '';
+    t.appendChild(U.h('span', null, msg));
+    t.classList.toggle('has-action', !!o.action);
+    if (o.action) {
+      t.appendChild(U.h('button', {
+        class: 'toast-btn', type: 'button',
+        onmousedown: (e) => e.preventDefault(),
+        onclick: () => { t.classList.remove('show'); clearTimeout(toastTimer); o.onAction(); }
+      }, o.action));
+    }
     t.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.remove('show'), ms);
+    toastTimer = setTimeout(() => t.classList.remove('show'), o.ms || (o.action ? 6000 : 2600));
   };
 
   // Salva un file: su telefono apre il foglio di condivisione (→ "Salva su File" / iCloud Drive),
@@ -158,6 +169,10 @@
     phone: '<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
     check: '<path d="m5 12 5 5L20 7"/>',
+    arrowUp: '<path d="M12 19V5M6 11l6-6 6 6"/>',
+    arrowDown: '<path d="M12 5v14M6 13l6 6 6-6"/>',
+    select: '<path d="M5 4h2M11 4h2M17 4h2M5 20h2M11 20h2M17 20h2M4 9v2M4 15v1M20 9v2M20 15v1"/><path d="M9 9h6M9 12h6M9 15h4"/>',
+    scissors: '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/>',
     sidebar: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>'
   };
   U.icon = function (name, size = 18) {

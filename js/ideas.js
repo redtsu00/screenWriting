@@ -14,9 +14,13 @@
     if (c.type === 'scene') badge = num ? h('span', { class: 'badge' }, 'Sc. ' + num) : h('span', { class: 'badge muted' }, 'Da scrivere');
     return h('article', {
       class: 'card c-' + (c.color || 'none'), dataset: { id: c.id }, tabindex: '0',
-      onclick: (e) => { if (!e.target.closest('.grip')) Cards.edit(c.id, { onChange: render }); },
+      onclick: (e) => { if (!e.target.closest('.grip, .card-more')) Cards.edit(c.id, { onChange: render }); },
       onkeydown: (e) => { if (e.key === 'Enter') Cards.edit(c.id, { onChange: render }); }
     },
+    h('button', {
+      class: 'card-more', type: 'button', title: 'Azioni', 'aria-label': 'Azioni sulla scheda',
+      onclick: (e) => window.Ciak.App.popMenu(e.currentTarget, Cards.menuItems(c, render), Cards.displayTitle(c))
+    }, U.icon('more', 16)),
     h('button', { class: 'grip', type: 'button', title: 'Trascina per spostare', 'aria-label': 'Sposta' }, U.icon('grip', 16)),
     badge ? h('div', { class: 'card-top' }, badge) : null,
     h('div', { class: 'card-title' }, Cards.displayTitle(c)),

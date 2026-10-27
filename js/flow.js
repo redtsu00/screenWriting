@@ -309,6 +309,7 @@
       U.append(selbar,
         h('button', { class: 'btn', type: 'button', onclick: () => editCard(c.id) }, U.icon('edit', 16), 'Modifica'),
         h('button', { class: 'btn', type: 'button', onclick: () => { connectFrom = c.id; render(); } }, U.icon('link', 16), 'Collega'),
+        h('button', { class: 'btn', type: 'button', onclick: () => { const d = Cards.duplicate(c.id); sel = d ? { kind: 'node', id: d.id } : null; render(); } }, U.icon('copy', 16), 'Duplica'),
         c.type === 'scene'
           ? (c.sceneId && proj().blocks.some((b) => b.id === c.sceneId)
             ? h('button', { class: 'btn', type: 'button', onclick: () => Cards.openInScript(c) }, U.icon('file', 16), 'Apri nel copione')
@@ -333,7 +334,7 @@
   function deleteSelection() {
     if (!sel) return;
     if (sel.kind === 'node') Cards.remove(sel.id);
-    else Cards.unlink(sel.id);
+    else Cards.unlink(sel.id, { undo: true });
     sel = null;
     render();
   }

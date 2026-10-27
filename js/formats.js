@@ -112,23 +112,12 @@
     return '(' + t + ')';
   }
 
-  // blocchi → Fountain
-  function toFountain(project) {
-    const tp = project.titlePage || {};
+  // blocchi → Fountain (solo il copione, senza frontespizio)
+  function toFountainBody(blocks, numbers) {
     const out = [];
-    const tpl = [];
-    if (tp.title) tpl.push('Title: ' + tp.title);
-    if (tp.credit) tpl.push('Credit: ' + tp.credit);
-    if (tp.author) tpl.push('Author: ' + tp.author);
-    if (tp.source) tpl.push('Source: ' + tp.source);
-    if (tp.draftDate) tpl.push('Draft date: ' + tp.draftDate);
-    if (tp.contact) tpl.push('Contact:\n' + tp.contact.split('\n').map((l) => '    ' + l).join('\n'));
-    if (tpl.length) out.push(tpl.join('\n'), '');
-
     let num = 0;
-    const numbers = project.settings && project.settings.sceneNumbers;
     let prev = null;
-    for (const blk of project.blocks) {
+    for (const blk of blocks) {
       const text = (blk.text || '').trim();
       if (!text && blk.type !== 'action') continue;
       const tight = (blk.type === 'dialogue' || blk.type === 'parenthetical') &&
@@ -165,7 +154,20 @@
       }
       prev = blk;
     }
-    return out.join('\n') + '\n';
+    return out.join('\n');
+  }
+
+  function toFountain(project) {
+    const tp = project.titlePage || {};
+    const tpl = [];
+    if (tp.title) tpl.push('Title: ' + tp.title);
+    if (tp.credit) tpl.push('Credit: ' + tp.credit);
+    if (tp.author) tpl.push('Author: ' + tp.author);
+    if (tp.source) tpl.push('Source: ' + tp.source);
+    if (tp.draftDate) tpl.push('Draft date: ' + tp.draftDate);
+    if (tp.contact) tpl.push('Contact:\n' + tp.contact.split('\n').map((l) => '    ' + l).join('\n'));
+    const body = toFountainBody(project.blocks, project.settings && project.settings.sceneNumbers);
+    return (tpl.length ? tpl.join('\n') + '\n\n' : '') + body + '\n';
   }
 
   const FDX_TYPES = {
@@ -235,5 +237,5 @@ ${tpParas.join('\n')}
     return { titlePage, blocks };
   }
 
-  window.Ciak.Formats = { parseFountain, toFountain, toFDX, parseFDX, SCENE_RE, parenWrap };
+  window.Ciak.Formats = { parseFountain, toFountain, toFountainBody, toFDX, parseFDX, SCENE_RE, parenWrap };
 })();

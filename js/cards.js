@@ -49,11 +49,42 @@
     return c;
   }
 
-  function remove(id) {
-    p().cards = p().cards.filter((c) => c.id !== id);
+  // ripristino dopo un'eliminazione (pulsante "Annulla" del messaggio)
+  function undoable(message) {
+    const snap = { cards: JSON.stringify(p().cards), edges: JSON.stringify(p().edges) };
+    return () => U.toast(message, {
+      action: 'Annulla',
+      onAction: () => {
+        p().cards = JSON.parse(snap.cards);
+        p().edges = JSON.parse(snap.edges);
+        Store.touch();
+        window.Ciak.App.refresh();
+      }
+    });
+  }
+
+  function remove(id, opts = {}) {
+    const c = find(id);
+    if (!c) return;
+    const notify = opts.silent ? null : undoable(`Scheda «${short(displayTitle(c))}» eliminata` + (blockOf(c) ? ' (la scena resta nel copione)' : ''));
+    p().cards = p().cards.filter((x) => x.id !== id);
     p().edges = p().edges.filter((e) => e.from !== id && e.to !== id);
     Store.touch();
+    if (notify) notify();
   }
+
+  function duplicate(id) {
+    const c = find(id);
+    if (!c) return null;
+    const copy = Object.assign({}, c, { id: U.uid(), title: displayTitle(c) + (c.type === 'scene' ? '' : ' (copia)') });
+    delete copy.sceneId;
+    if (c.x != null) { copy.x = c.x + 30; copy.y = c.y + 30; }
+    p().cards.splice(p().cards.indexOf(c) + 1, 0, copy);
+    Store.touch();
+    return copy;
+  }
+
+  const short = (t) => (t.length > 28 ? t.slice(0, 27) + '…' : t);
 
   function link(from, to, label) {
     if (!from || !to || from === to) return null;
@@ -65,9 +96,24 @@
     return e;
   }
 
-  function unlink(edgeId) {
+  function unlink(edgeId, opts = {}) {
+    const notify = opts.undo ? undoable('Collegamento eliminato') : null;
     p().edges = p().edges.filter((e) => e.id !== edgeId);
     Store.touch();
+    if (notify) notify();
+  }
+
+  // voci del menu ⋯ di una scheda
+  function menuItems(c, onChange) {
+    const linked = !!blockOf(c);
+    return [
+      { icon: 'edit', label: 'Modifica', onClick: () => edit(c.id, { onChange }) },
+      { icon: 'copy', label: 'Duplica', onClick: () => { duplicate(c.id); onChange(); } },
+      c.type === 'scene' ? (linked
+        ? { icon: 'file', label: 'Apri nel copione', onClick: () => openInScript(c) }
+        : { icon: 'pen', label: 'Scrivi nel copione', onClick: () => writeInScript(c) }) : null,
+      { icon: 'trash', label: 'Elimina scheda', danger: true, onClick: () => { remove(c.id); onChange(); } }
+    ].filter(Boolean);
   }
 
   // Crea una scheda per ogni scena del copione che non ne ha ancora una
@@ -241,20 +287,16 @@
       title: opts.isNew ? 'Nuova scheda' : 'Modifica scheda',
       body,
       actions: [
-        { label: 'Elimina', kind: 'danger-text', left: true, onClick: async (close) => {
-          if ((c.title.trim() || c.text.trim()) && !(await App.confirm({ title: 'Eliminare la scheda?', message: `«${displayTitle(c)}» e i suoi collegamenti verranno eliminati.`, ok: 'Elimina', danger: true }))) return;
-          remove(c.id);
-          close();
-        } },
+        { label: 'Elimina', kind: 'danger-text', left: true, onClick: (close) => { remove(c.id, { silent: !c.title.trim() && !c.text.trim() }); close(); } },
         { label: 'Fatto', kind: 'primary', onClick: (close) => close() }
       ],
       onClose: () => {
-        if (find(c.id) && opts.isNew && !c.title.trim() && !c.text.trim() && !c.sceneId) remove(c.id);
+        if (find(c.id) && opts.isNew && !c.title.trim() && !c.text.trim() && !c.sceneId) remove(c.id, { silent: true });
         if (opts.onChange) opts.onChange();
       }
     });
     requestAnimationFrame(() => { autoGrow(); if (opts.isNew || !U.isTouch()) titleIn.focus(); });
   }
 
-  window.Ciak.Cards = { TYPES, TYPE, COLORS, find, create, remove, link, unlink, displayTitle, sceneNumber, sceneNumbers, importScenes, edit, openInScript, writeInScript };
+  window.Ciak.Cards = { TYPES, TYPE, COLORS, find, create, remove, duplicate, menuItems, link, unlink, displayTitle, sceneNumber, sceneNumbers, importScenes, edit, openInScript, writeInScript };
 })();

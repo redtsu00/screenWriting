@@ -26,11 +26,13 @@ Tutti gli elementi del formato sceneggiatura, impaginati automaticamente in Cour
 - **Tab / ⇧Tab** cambiano il tipo della riga, **⌥1…⌥9** lo scelgono direttamente; la barra in alto (in basso su telefono) mostra il tipo attivo.
 - Suggerimenti automatici: nomi dei personaggi (con l'alternanza di chi parla), `INT./EST.`, luoghi già usati, `GIORNO/NOTTE`, transizioni e inquadrature.
 - Scrivi `int.` o `est.` e la riga diventa un'intestazione; scrivi `(` in un dialogo e diventa una parentetica.
-- Barra laterale con l'elenco delle scene (trascinale per riordinarle) e dei personaggi con il numero di battute.
-- Conteggio di pagine, minuti e parole. Annulla/Ripeti.
+- Il copione è un unico foglio: selezioni più righe (o una scena intera) trascinando, poi cancelli, tagli, copi o incolli come in un normale editor. Copiando più righe i tipi di elemento si conservano.
+- **Menu della riga e della scena**: l'etichetta grigia a sinistra della riga (o il pulsante **⋯** nella barra degli elementi) permette di cambiare tipo, eliminare, duplicare, spostare su/giù la riga o l'intera scena, e di selezionare tutta la scena. **⌥↑ / ⌥↓** spostano le righe, **⌘⇧⌫** le elimina.
+- Barra laterale con l'elenco delle scene (trascinale per riordinarle, oppure usa il loro menu **⋯** per eliminarle, duplicarle o spostarle) e dei personaggi con il numero di battute.
+- Dopo ogni eliminazione compare **Annulla**. Conteggio di pagine, minuti e parole. Annulla/Ripeti.
 
 ### Idee & Scene
-Una bacheca con quattro colonne — **Idee, Scene, Personaggi, Note** — per scrivere le idee prima di scriverle nel copione. Le schede si colorano, si cercano e si riordinano trascinandole (anche da una colonna all'altra).
+Una bacheca con quattro colonne — **Idee, Scene, Personaggi, Note** — per scrivere le idee prima di scriverle nel copione. Le schede si colorano, si cercano e si riordinano trascinandole (anche da una colonna all'altra). Il menu **⋯** di ogni scheda permette di modificarla, duplicarla o eliminarla (con Annulla).
 - "Importa scene dal copione" crea una scheda per ogni scena già scritta.
 - Su una scheda scena, "Scrivi nel copione" aggiunge la scena in fondo al copione.
 - I personaggi creati qui vengono suggeriti mentre scrivi.

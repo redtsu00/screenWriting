@@ -1,4 +1,11 @@
-/* Ciak — editor del copione */
+/* Ciak — editor del copione
+ *
+ * Il copione è un unico elemento modificabile (#page) che contiene una riga <div class="el">
+ * per ogni elemento della sceneggiatura. Così si può selezionare, cancellare, copiare e
+ * incollare su più righe come in un normale editor di testo. Il modello (Store.project.blocks)
+ * viene aggiornato a ogni modifica; Invio, cancellazioni tra più righe, incolla e taglia sono
+ * gestiti qui per avere sempre un risultato prevedibile.
+ */
 (function () {
   'use strict';
   const { U, Store, Formats } = window.Ciak;
@@ -39,38 +46,39 @@
     return d.contentEditable === 'plaintext-only' ? 'plaintext-only' : 'true';
   })();
 
-  let page, paper, elbar, typeTag, acBox, extBox, mSuggest, hintEl, statsEl, sidebar, sceneList, charList;
+  let page, paper, elbar, typeTag, acBox, extBox, mSuggest, hintEl, statsEl, sceneList, charList;
   let curId = null;
+  let lastSel = null;
   let renderedFor = null;
   const ac = { items: [], index: -1, forId: null, dismissed: null };
 
   const blocks = () => Store.project.blocks;
   const idx = (id) => blocks().findIndex((b) => b.id === id);
   const get = (id) => blocks().find((b) => b.id === id);
-  const elOf = (id) => page.querySelector(`.el[data-id="${id}"]`);
-  const txOf = (id) => { const e = elOf(id); return e ? e.firstChild : null; };
+  const elOf = (id) => (id ? page.querySelector(`.el[data-id="${id}"]`) : null);
   const cur = () => (curId ? get(curId) : null);
   const stripExt = (name) => name.toUpperCase().replace(/\s*\(.*$/, '').replace(/\^$/, '').trim();
+  const isFocused = () => document.activeElement === page;
 
-  /* ---------- DOM dei blocchi ---------- */
+  /* ---------- DOM delle righe ---------- */
+
+  function fill(el, text) {
+    if (text) el.textContent = text;
+    else el.innerHTML = '<br>';
+  }
 
   function makeEl(b) {
-    const tx = h('div', { class: 'tx', spellcheck: 'true' });
-    tx.contentEditable = CE_MODE;
-    tx.textContent = b.text;
-    const el = h('div', { class: 'el', dataset: { id: b.id } }, tx);
+    const el = document.createElement('div');
+    el.dataset.id = b.id;
+    fill(el, b.text);
     applyType(el, b);
     return el;
   }
 
   function applyType(el, b) {
-    el.className = 'el el-' + b.type + (b.text ? '' : ' is-empty') + (b.id === curId ? ' focused' : '');
-    const tx = el.firstChild;
-    tx.dataset.ph = TYPE[b.type].hint;
-    const upper = UPPER.has(b.type);
-    tx.setAttribute('autocapitalize', upper ? 'characters' : 'sentences');
-    tx.setAttribute('autocorrect', upper ? 'off' : 'on');
-    tx.setAttribute('aria-label', TYPE[b.type].label);
+    const cls = 'el el-' + b.type + (b.text ? '' : ' is-empty') + (b.id === curId ? ' focused' : '');
+    if (el.className !== cls) el.className = cls;
+    if (el.dataset.ph !== TYPE[b.type].hint) el.dataset.ph = TYPE[b.type].hint;
   }
 
   function render() {
@@ -81,18 +89,15 @@
     page.appendChild(frag);
     renderedFor = Store.project.id;
     if (!get(curId)) curId = null;
+    lastSel = null;
     renumber();
     refreshSide();
     updateStats();
-    onFocusChange();
+    onSelChange();
   }
 
+  // i numeri di scena sono contatori CSS: qui si attivano/disattivano soltanto
   function renumber() {
-    let n = 0;
-    for (const el of page.children) {
-      if (el.classList.contains('el-scene')) el.dataset.num = ++n;
-      else if (el.dataset.num) delete el.dataset.num;
-    }
     page.classList.toggle('show-numbers', !!Store.project.settings.sceneNumbers);
   }
 
@@ -100,8 +105,8 @@
     b.text = text;
     const el = elOf(b.id);
     if (el) {
-      if (el.firstChild.textContent !== text) el.firstChild.textContent = text;
-      el.classList.toggle('is-empty', !text);
+      if (el.textContent !== text || (!text && !el.querySelector('br'))) fill(el, text);
+      applyType(el, b);
     }
   }
 
@@ -121,38 +126,80 @@
     if (el) el.remove();
   }
 
-  /* ---------- cursore ---------- */
-
-  function getOffsets(tx) {
-    const sel = window.getSelection();
-    const len = tx.textContent.length;
-    if (!sel.rangeCount || !tx.contains(sel.anchorNode)) return { start: len, end: len };
-    const r = sel.getRangeAt(0);
-    const pre = document.createRange();
-    pre.selectNodeContents(tx);
-    pre.setEnd(r.startContainer, r.startOffset);
-    const start = pre.toString().length;
-    pre.setEnd(r.endContainer, r.endOffset);
-    return { start, end: pre.toString().length };
+  function ensureOne() {
+    if (blocks().length) return;
+    const b = { id: U.uid(), type: 'action', text: '' };
+    blocks().push(b);
+    page.appendChild(makeEl(b));
   }
 
-  function setCaret(tx, offset) {
-    if (document.activeElement !== tx) tx.focus({ preventScroll: true });
-    const range = document.createRange();
-    const walker = document.createTreeWalker(tx, NodeFilter.SHOW_TEXT);
-    let node, rem = Math.max(0, offset), placed = false;
-    while ((node = walker.nextNode())) {
-      if (rem <= node.length) { range.setStart(node, rem); placed = true; break; }
-      rem -= node.length;
+  /* ---------- selezione ---------- */
+
+  function lineOf(node) {
+    while (node && node !== page) {
+      if (node.nodeType === 1 && node.parentNode === page) return node;
+      node = node.parentNode;
     }
-    if (!placed) range.setStart(tx, tx.childNodes.length);
-    range.collapse(true);
+    return null;
+  }
+
+  function pointOf(node, offset) {
+    if (node === page) {
+      const kids = page.children;
+      if (!kids.length) return null;
+      if (offset < kids.length) return { id: kids[offset].dataset.id, off: 0 };
+      const last = kids[kids.length - 1];
+      return { id: last.dataset.id, off: last.textContent.length };
+    }
+    const el = lineOf(node);
+    if (!el) return null;
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    try { r.setEnd(node, offset); } catch (e) { return { id: el.dataset.id, off: 0 }; }
+    return { id: el.dataset.id, off: r.toString().length };
+  }
+
+  // { startId, startOff, endId, endOff, collapsed } oppure null se il cursore non è nel copione
+  function getSel() {
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return null;
+    const r = sel.getRangeAt(0);
+    if (r.startContainer !== page && !page.contains(r.startContainer)) return null;
+    const a = pointOf(r.startContainer, r.startOffset);
+    const b = pointOf(r.endContainer, r.endOffset);
+    if (!a || !b || !a.id || !b.id) return null;
+    return { startId: a.id, startOff: a.off, endId: b.id, endOff: b.off, collapsed: r.collapsed };
+  }
+
+  function locate(el, off) {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let n, rem = Math.max(0, off), last = null;
+    while ((n = walker.nextNode())) {
+      if (rem <= n.length) return [n, rem];
+      rem -= n.length;
+      last = n;
+    }
+    return last ? [last, last.length] : [el, 0];
+  }
+
+  function setSel(id, off, endId, endOff) {
+    const el = elOf(id);
+    if (!el) return;
+    if (!isFocused()) page.focus({ preventScroll: true });
+    const range = document.createRange();
+    const [n, o] = locate(el, off === 'end' ? el.textContent.length : off);
+    range.setStart(n, o);
+    if (endId != null && elOf(endId)) {
+      const e2 = elOf(endId);
+      const [n2, o2] = locate(e2, endOff === 'end' ? e2.textContent.length : endOff);
+      range.setEnd(n2, o2);
+    } else range.collapse(true);
     const sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(range);
   }
 
-  function offsetFromPoint(tx, x, y) {
+  function offsetFromPoint(el, x, y) {
     let node = null, off = 0;
     if (document.caretRangeFromPoint) {
       const r = document.caretRangeFromPoint(x, y);
@@ -161,32 +208,20 @@
       const p = document.caretPositionFromPoint(x, y);
       if (p) { node = p.offsetNode; off = p.offset; }
     }
-    if (!node || !tx.contains(node)) return null;
+    if (!node || !el.contains(node)) return null;
     const pre = document.createRange();
-    pre.selectNodeContents(tx);
+    pre.selectNodeContents(el);
     pre.setEnd(node, off);
     return pre.toString().length;
   }
 
-  function caretRect() {
-    const sel = window.getSelection();
-    if (!sel.rangeCount) return null;
-    const r = sel.getRangeAt(0).cloneRange();
-    r.collapse(true);
-    const rects = r.getClientRects();
-    if (rects.length) return rects[0];
-    const br = r.getBoundingClientRect();
-    return br && (br.top || br.height) ? br : null;
-  }
-
-  function lineInfo(tx) {
-    if (!tx.textContent) return { first: true, last: true, rect: null };
-    const rect = caretRect();
-    const o = getOffsets(tx);
-    if (!rect) return { first: o.start === 0, last: o.start === tx.textContent.length, rect: null };
-    const er = tx.getBoundingClientRect();
-    const lh = parseFloat(getComputedStyle(tx).lineHeight) || 20;
-    return { first: rect.top - er.top < lh * 0.7, last: er.bottom - rect.bottom < lh * 0.7, rect };
+  // righe coinvolte dalla selezione (una selezione che finisce all'inizio di una riga non la include)
+  function lineRange(s) {
+    let si = idx(s.startId), ei = idx(s.endId || s.startId);
+    if (si < 0) si = 0;
+    if (ei < 0) ei = si;
+    if (ei > si && !s.collapsed && s.endOff === 0) ei--;
+    return [Math.min(si, ei), Math.max(si, ei)];
   }
 
   function insets() {
@@ -202,10 +237,7 @@
   function ensureVisible(el, center) {
     const r = el.getBoundingClientRect();
     const { top, bottom } = insets();
-    if (center) {
-      window.scrollBy({ top: r.top - top - (bottom - top) * 0.25 });
-      return;
-    }
+    if (center) { window.scrollBy({ top: r.top - top - (bottom - top) * 0.25 }); return; }
     if (r.bottom > bottom - 12) window.scrollBy({ top: r.bottom - bottom + 40 });
     else if (r.top < top + 8) window.scrollBy({ top: r.top - top - 40 });
   }
@@ -213,23 +245,76 @@
   function focusBlock(id, offset = 'end', opts = {}) {
     const el = elOf(id);
     if (!el) return;
-    const tx = el.firstChild;
-    const off = offset === 'end' ? tx.textContent.length : offset === 'start' ? 0 : offset;
-    setCaret(tx, off);
+    setSel(id, offset);
     curId = id;
     ensureVisible(el, opts.center);
-    onFocusChange();
+    onSelChange();
+  }
+
+  /* ---------- sincronizzazione DOM → modello ---------- */
+
+  // Rimette in ordine il DOM dopo modifiche fatte dal browser (righe nuove senza id,
+  // testo fuori dalle righe, formattazione incollata…) e aggiorna il modello.
+  function reconcile() {
+    const sel = window.getSelection();
+    const raw = sel.rangeCount && page.contains(sel.focusNode) ? { node: sel.focusNode, off: sel.focusOffset } : null;
+    let touched = false;
+
+    // testo o elementi sciolti direttamente nel copione → dentro una riga
+    let wrap = null;
+    for (const child of Array.from(page.childNodes)) {
+      if (child.nodeType === 1 && child.nodeName === 'DIV') { wrap = null; continue; }
+      if (child.nodeType === 3 && !child.textContent) { child.remove(); continue; }
+      if (child.nodeType !== 1 && child.nodeType !== 3) { child.remove(); continue; }
+      if (!wrap) { wrap = document.createElement('div'); page.insertBefore(wrap, child); }
+      wrap.appendChild(child);
+      touched = true;
+    }
+
+    let caret = null;
+    if (raw && page.contains(raw.node)) {
+      const el = lineOf(raw.node);
+      if (el) {
+        const r = document.createRange();
+        r.selectNodeContents(el);
+        try { r.setEnd(raw.node, raw.off); caret = { el, off: r.toString().length }; } catch (e) { caret = { el, off: 0 }; }
+      }
+    }
+
+    const old = new Map(blocks().map((b) => [b.id, b]));
+    const seen = new Set();
+    const next = [];
+    for (const el of Array.from(page.children)) {
+      let id = el.dataset.id;
+      let b = id && !seen.has(id) ? old.get(id) : null;
+      if (!b) {
+        const m = (el.className || '').match(/\bel-(\w+)/);
+        const prev = next[next.length - 1];
+        const type = id && old.get(id) ? old.get(id).type : (m && TYPE[m[1]] ? m[1] : (prev ? prev.type : 'action'));
+        id = U.uid();
+        el.dataset.id = id;
+        b = { id, type, text: '' };
+      }
+      seen.add(id);
+      const messy = Array.from(el.childNodes).some((n) => n.nodeType === 1 && n.nodeName !== 'BR') || /\n/.test(el.textContent);
+      const text = el.textContent.replace(/\n/g, ' ');
+      if (messy) { fill(el, text); touched = true; }
+      else if (!text && !el.querySelector('br')) fill(el, '');
+      b.text = text;
+      applyType(el, b);
+      next.push(b);
+    }
+    Store.project.blocks = next;
+    ensureOne();
+    if (touched && caret && page.contains(caret.el)) setSel(caret.el.dataset.id, caret.off);
   }
 
   /* ---------- cronologia (annulla / ripeti) ---------- */
 
   let hist = [], hi = -1;
   function snapshot() {
-    let off = 0;
-    const tx = curId && txOf(curId);
-    if (tx && document.activeElement === tx) off = getOffsets(tx).start;
-    else if (tx) off = tx.textContent.length;
-    return { data: JSON.stringify(blocks()), focus: curId, off };
+    const s = (isFocused() && getSel()) || lastSel;
+    return { data: JSON.stringify(blocks()), focus: s ? s.startId : curId, off: s ? s.startOff : 0 };
   }
   function resetHistory() { hist = [snapshot()]; hi = 0; updateUndoButtons(); }
   function commitHistory() {
@@ -248,8 +333,8 @@
     Store.project.blocks = JSON.parse(s.data);
     curId = s.focus;
     render();
-    const b = s.focus && get(s.focus);
-    if (b) focusBlock(b.id, Math.min(s.off, b.text.length));
+    const b = (s.focus && get(s.focus)) || blocks()[0];
+    focusBlock(b.id, Math.min(s.off, b.text.length));
     Store.touch();
     updateUndoButtons();
   }
@@ -278,55 +363,114 @@
     updateStatsSoon();
   }
 
-  /* ---------- operazioni ---------- */
+  /* ---------- tipo di elemento ---------- */
 
-  function setType(id, type) {
-    const b = get(id);
-    if (!b || !TYPE[type]) return;
-    const el = elOf(id);
-    const tx = el.firstChild;
-    const focused = document.activeElement === tx;
-    if (b.type === type) { if (!focused) focusBlock(id); return; }
-    commitHistory();
-    let start = focused ? getOffsets(tx).start : b.text.length;
-    const old = b.type;
-    let t = b.text;
-    if (old === 'parenthetical') {
-      if (t.startsWith('(')) { t = t.slice(1); start = Math.max(0, start - 1); }
+  function convertText(t, from, to, caret) {
+    if (from === 'parenthetical' && to !== 'parenthetical') {
+      if (t.startsWith('(')) { t = t.slice(1); caret = Math.max(0, caret - 1); }
       t = t.replace(/\)\s*$/, '');
     }
-    if (type === 'parenthetical') {
-      if (!t.startsWith('(')) { t = '(' + t; start++; }
+    if (to === 'parenthetical' && from !== 'parenthetical') {
+      if (!t.startsWith('(')) { t = '(' + t; caret++; }
       if (!t.endsWith(')') || t === '(') t += ')';
-      start = Math.min(start, t.length - 1);
+      caret = Math.min(caret, t.length - 1);
     }
-    b.type = type;
-    setText(b, t);
-    applyType(el, b);
-    if (old === 'scene' || type === 'scene') renumber();
-    setCaret(tx, Math.min(start, t.length));
-    curId = id;
-    onFocusChange();
+    return [t, Math.min(caret, t.length)];
+  }
+
+  // Cambia il tipo delle righe selezionate (o della riga corrente)
+  function setType(type, s) {
+    s = s || (isFocused() && getSel()) || lastSel;
+    if (!s || !TYPE[type]) return;
+    const [si, ei] = lineRange(s);
+    commitHistory();
+    const bl = blocks();
+    let caret = s.startOff;
+    for (let i = si; i <= ei; i++) {
+      const b = bl[i];
+      if (b.type === type) continue;
+      const [t, c] = convertText(b.text, b.type, type, i === si ? caret : b.text.length);
+      if (i === si) caret = c;
+      b.type = type;
+      setText(b, t);
+    }
+    if (si === ei) setSel(bl[si].id, caret);
+    else setSel(bl[si].id, 0, bl[ei].id, 'end');
+    curId = bl[si].id;
+    onSelChange();
     changed(true);
   }
 
-  function handleEnter(tx) {
-    const el = tx.parentNode;
-    const b = get(el.dataset.id);
+  function applyTypeToCurrent(type) {
+    let s = (isFocused() && getSel()) || lastSel;
+    if (!s || !get(s.startId)) {
+      const last = blocks()[blocks().length - 1];
+      const b = last && !last.text ? last : insertAt(blocks().length, type, '');
+      s = { startId: b.id, startOff: 0, endId: b.id, endOff: 0, collapsed: true };
+    }
+    setType(type, s);
+  }
+
+  /* ---------- modifiche al testo ---------- */
+
+  // Cancella la selezione. Se comprende righe intere le elimina del tutto.
+  // Restituisce il punto in cui resta il cursore.
+  function deleteSelection(s) {
+    commitHistory();
+    const bl = blocks();
+    let si = idx(s.startId), ei = idx(s.endId);
+    let so = s.startOff, eo = s.endOff;
+    let withBreak = false;
+    if (ei > si && eo === 0) { ei--; eo = bl[ei].text.length; withBreak = true; }
+    const first = bl[si], last = bl[ei];
+    let point;
+    if (so === 0 && eo === last.text.length && (ei > si || withBreak)) {
+      bl.slice(si, ei + 1).forEach((b) => removeBlock(b.id));
+      ensureOne();
+      const nb = blocks()[si];
+      point = nb ? { id: nb.id, off: 0 } : { id: blocks()[si - 1].id, off: blocks()[si - 1].text.length };
+    } else {
+      const text = first.text.slice(0, so) + last.text.slice(eo);
+      bl.slice(si + 1, ei + 1).forEach((b) => removeBlock(b.id));
+      setText(first, text);
+      point = { id: first.id, off: so };
+    }
+    setSel(point.id, point.off);
+    curId = point.id;
+    onSelChange();
+    changed(true);
+    return point;
+  }
+
+  function insertTextAt(p, text) {
+    const b = get(p.id);
+    setText(b, b.text.slice(0, p.off) + text + b.text.slice(p.off));
+    setSel(b.id, p.off + text.length);
+    changed(false);
+    autoDetect(b);
+  }
+
+  function handleEnter(s) {
+    commitHistory();
+    if (!s.collapsed) {
+      const p = deleteSelection(s);
+      s = { startId: p.id, startOff: p.off, endId: p.id, endOff: p.off, collapsed: true };
+    }
+    const b = get(s.startId);
     if (!b) return;
     const i = idx(b.id);
-    commitHistory();
-    const text = tx.textContent;
-    if (!text.trim()) { setType(b.id, EMPTY_ENTER[b.type]); return; }
-    const { start, end } = getOffsets(tx);
-    if (start === 0 && end === 0) {
+    const el = elOf(b.id);
+    const text = b.text;
+    if (!text.trim()) { setType(EMPTY_ENTER[b.type], s); return; }
+    const start = s.startOff;
+    if (start === 0) {
       insertAt(i, 'action', '');
       focusBlock(b.id, 0);
       changed(true);
       return;
     }
     let before = text.slice(0, start).replace(/\s+$/, '');
-    let after = text.slice(end).replace(/^\s+/, '');
+    let after = text.slice(start).replace(/^\s+/, '');
     if (b.type === 'parenthetical') {
       if (after.trim() === ')') after = '';
       if (before && !before.startsWith('(')) before = '(' + before;
@@ -339,15 +483,14 @@
     setText(b, before);
     const nt = after ? b.type : NEXT_ON_ENTER[b.type];
     const nb = insertAt(i + 1, nt, after);
-    if (b.type === 'scene' || nt === 'scene') renumber();
     focusBlock(nb.id, 'start');
     changed(true);
   }
 
-  function mergeBackward(tx) {
-    const b = get(tx.parentNode.dataset.id);
-    const i = idx(b.id);
-    if (i <= 0) { if (!b.text && b.type !== 'action') setType(b.id, 'action'); return; }
+  function mergeBackward(id) {
+    const b = get(id);
+    const i = idx(id);
+    if (i <= 0) { if (!b.text && b.type !== 'action') setType('action'); return; }
     commitHistory();
     const prev = blocks()[i - 1];
     if (!b.text) { removeBlock(b.id); focusBlock(prev.id, 'end'); }
@@ -358,41 +501,34 @@
       removeBlock(b.id);
       focusBlock(prev.id, len);
     }
-    renumber();
     changed(true);
   }
 
-  function mergeForward(tx) {
-    const b = get(tx.parentNode.dataset.id);
-    const i = idx(b.id);
+  function mergeForward(id) {
+    const b = get(id);
+    const i = idx(id);
     const next = blocks()[i + 1];
     if (!next) return;
     commitHistory();
     const len = b.text.length;
+    if (!b.text) { removeBlock(b.id); focusBlock(next.id, 0); changed(true); return; }
     if (next.text) setText(b, b.text + next.text);
     removeBlock(next.id);
     focusBlock(b.id, len);
-    renumber();
     changed(true);
   }
 
-  function moveVert(dir, tx, rect) {
-    const i = idx(tx.parentNode.dataset.id) + dir;
-    const target = blocks()[i];
-    if (!target) return false;
-    const tel = elOf(target.id);
-    ensureVisible(tel);
-    let off = null;
-    if (rect) {
-      const ttx = tel.firstChild;
-      const tr = ttx.getBoundingClientRect();
-      const lh = parseFloat(getComputedStyle(ttx).lineHeight) || 20;
-      const y = dir < 0 ? tr.bottom - lh / 2 : tr.top + lh / 2;
-      const x = U.clamp(rect.left, tr.left + 1, tr.right - 1);
-      off = offsetFromPoint(ttx, x, y);
+  function autoDetect(b) {
+    if (b.type === 'action' && /^(int|ext|est)[.\s]|^(int\.?\/e[sx]t\.?|i\/e)[.\s]/i.test(b.text)) {
+      const s = getSel();
+      setType('scene', s && s.startId === b.id ? s : { startId: b.id, startOff: b.text.length, endId: b.id, endOff: b.text.length, collapsed: true });
+      return true;
     }
-    focusBlock(target.id, off == null ? (dir < 0 ? 'end' : 'start') : off);
-    return true;
+    if (b.type === 'dialogue' && b.text === '(') {
+      setType('parenthetical', { startId: b.id, startOff: 1, endId: b.id, endOff: 1, collapsed: true });
+      return true;
+    }
+    return false;
   }
 
   function toggleExtension(ext) {
@@ -401,15 +537,14 @@
     commitHistory();
     const tag = '(' + ext + ')';
     let t = b.text.trim();
-    const has = t.toUpperCase().includes(tag);
-    const strip = (s, x) => s.replace(new RegExp('\\s*\\(' + x.replace(/[.']/g, (c) => '\\' + c) + '\\)', 'i'), '');
-    if (has) t = strip(t, ext);
+    const strip = (str, x) => str.replace(new RegExp('\\s*\\(' + x.replace(/[.']/g, (c) => '\\' + c) + '\\)', 'i'), '');
+    if (t.toUpperCase().includes(tag)) t = strip(t, ext);
     else {
       if (EXT_GROUP.includes(ext)) EXT_GROUP.forEach((x) => { t = strip(t, x); });
       if (ext === "CONT'D") t = t + ' ' + tag;
       else {
         const m = t.match(/\s*\(CONT'D\)/i);
-        t = m ? t.replace(m[0], '') + ' ' + tag + ' (CONT\'D)' : t + ' ' + tag;
+        t = m ? t.replace(m[0], '') + ' ' + tag + " (CONT'D)" : t + ' ' + tag;
       }
     }
     setText(b, t.trim());
@@ -417,16 +552,201 @@
     changed(true);
   }
 
-  // Applica un tipo all'elemento attivo (barra elementi)
-  function applyTypeToCurrent(type) {
-    let b = cur();
-    if (!b) {
-      const last = blocks()[blocks().length - 1];
-      b = last && !last.text ? last : insertAt(blocks().length, type, '');
-      curId = b.id;
+  // testo da mettere negli appunti: formato Fountain se sono più righe (così incollando i tipi si conservano)
+  function selectionText(s) {
+    const si = idx(s.startId), ei = idx(s.endId);
+    if (si === ei) return get(s.startId).text.slice(s.startOff, s.endOff);
+    const part = blocks().slice(si, ei + 1).map((b, k, arr) => {
+      let t = b.text;
+      if (k === arr.length - 1) t = t.slice(0, s.endOff);
+      if (k === 0) t = t.slice(s.startOff);
+      return { type: b.type, text: t };
+    }).filter((b) => b.text.trim());
+    return Formats.toFountainBody(part, false);
+  }
+
+  function insertBlocks(p, parsed) {
+    commitHistory();
+    const b = get(p.id);
+    let i = idx(b.id);
+    const before = b.text.slice(0, p.off), after = b.text.slice(p.off);
+    let at;
+    if (!b.text.trim()) { removeBlock(b.id); at = i; }
+    else if (!after) at = i + 1;
+    else if (!before) at = i;
+    else { setText(b, before); insertAt(i + 1, b.type, after); at = i + 1; }
+    let last = null;
+    parsed.forEach((x, k) => { last = insertAt(at + k, x.type, x.text); });
+    ensureOne();
+    focusBlock(last ? last.id : blocks()[Math.min(at, blocks().length - 1)].id, 'end');
+    changed(true);
+  }
+
+  /* ---------- azioni su righe e scene ---------- */
+
+  function deleteLines(si, ei, message) {
+    commitHistory();
+    const removed = blocks().slice(si, ei + 1);
+    removed.forEach((b) => removeBlock(b.id));
+    ensureOne();
+    const bl = blocks();
+    const nb = bl[si] || bl[si - 1];
+    focusBlock(nb.id, bl[si] ? 0 : 'end');
+    changed(true);
+    refreshSide();
+    U.toast(message || (removed.length > 1 ? `${removed.length} righe eliminate` : 'Riga eliminata'), { action: 'Annulla', onAction: undo });
+  }
+
+  function duplicateLines(si, ei) {
+    commitHistory();
+    const copies = blocks().slice(si, ei + 1).map((b) => ({ type: b.type, text: b.text }));
+    let last = null;
+    copies.forEach((c, k) => { last = insertAt(ei + 1 + k, c.type, c.text); });
+    setSel(blocks()[ei + 1].id, 0, last.id, 'end');
+    curId = last.id;
+    onSelChange();
+    changed(true);
+    refreshSide();
+  }
+
+  function moveLines(s, dir) {
+    const [si, ei] = lineRange(s);
+    const bl = blocks();
+    if ((dir < 0 && si === 0) || (dir > 0 && ei === bl.length - 1)) return;
+    commitHistory();
+    const chunk = bl.splice(si, ei - si + 1);
+    const els = chunk.map((b) => elOf(b.id));
+    if (dir < 0) {
+      const ref = elOf(bl[si - 1].id);
+      els.forEach((el) => page.insertBefore(el, ref));
+      bl.splice(si - 1, 0, ...chunk);
+    } else {
+      const ref = elOf(bl[si].id);
+      ref.after(...els);
+      bl.splice(si + 1, 0, ...chunk);
     }
-    setType(b.id, type);
-    focusBlock(b.id, document.activeElement === txOf(b.id) ? getOffsets(txOf(b.id)).start : 'end');
+    if (s.collapsed) setSel(s.startId, s.startOff);
+    else setSel(s.startId, s.startOff, s.endId, s.endOff);
+    ensureVisible(els[dir < 0 ? 0 : els.length - 1]);
+    onSelChange();
+    changed(true);
+    refreshSide();
+  }
+
+  function sceneOf(id) {
+    const bl = blocks();
+    for (let i = idx(id); i >= 0; i--) if (bl[i].type === 'scene') return bl[i].id;
+    return null;
+  }
+
+  function sceneRange(id) {
+    const bl = blocks();
+    const a = idx(id);
+    let z = a + 1;
+    while (z < bl.length && bl[z].type !== 'scene') z++;
+    return [a, z - 1];
+  }
+
+  function deleteScene(id) {
+    const [a, z] = sceneRange(id);
+    if (a < 0) return;
+    deleteLines(a, z, 'Scena eliminata');
+  }
+
+  function duplicateScene(id) {
+    const [a, z] = sceneRange(id);
+    if (a < 0) return;
+    duplicateLines(a, z);
+    focusBlock(blocks()[z + 1].id, 'end', { center: true });
+    U.toast('Scena duplicata');
+  }
+
+  function selectScene(id) {
+    const [a, z] = sceneRange(id);
+    if (a < 0) return;
+    const bl = blocks();
+    setSel(bl[a].id, 0, bl[z].id, 'end');
+    curId = bl[a].id;
+    ensureVisible(elOf(bl[a].id), true);
+    onSelChange();
+  }
+
+  function moveScene(id, beforeId) {
+    commitHistory();
+    const bl = blocks();
+    const [a, z] = sceneRange(id);
+    if (a < 0) return;
+    const chunk = bl.splice(a, z - a + 1);
+    let at = beforeId ? bl.findIndex((b) => b.id === beforeId) : bl.length;
+    if (at < 0) at = bl.length;
+    bl.splice(at, 0, ...chunk);
+    render();
+    changed(true);
+  }
+
+  function moveSceneBy(id, dir) {
+    const sc = getScenes();
+    const k = sc.findIndex((x) => x.id === id);
+    if (k < 0) return;
+    if (dir < 0 && k > 0) moveScene(id, sc[k - 1].id);
+    else if (dir > 0 && k < sc.length - 1) moveScene(id, sc[k + 2] ? sc[k + 2].id : null);
+    else return;
+    focusBlock(id, 'end', { center: true });
+  }
+
+  function sceneItems(id, withGo) {
+    const sc = getScenes();
+    const k = sc.findIndex((x) => x.id === id);
+    if (k < 0) return [];
+    const heading = sc[k].text.toUpperCase() || 'Scena senza titolo';
+    return [
+      { group: `Scena ${sc[k].num} · ${heading.length > 34 ? heading.slice(0, 33) + '…' : heading}` },
+      withGo ? { icon: 'file', label: 'Vai alla scena', onClick: () => jumpTo(id) } : null,
+      { icon: 'select', label: 'Seleziona tutta la scena', onClick: () => selectScene(id) },
+      { icon: 'copy', label: 'Duplica scena', onClick: () => duplicateScene(id) },
+      { icon: 'arrowUp', label: 'Sposta scena su', disabled: k === 0, onClick: () => moveSceneBy(id, -1) },
+      { icon: 'arrowDown', label: 'Sposta scena giù', disabled: k === sc.length - 1, onClick: () => moveSceneBy(id, 1) },
+      { icon: 'trash', label: 'Elimina scena', danger: true, onClick: () => deleteScene(id) }
+    ].filter(Boolean);
+  }
+
+  function lineItems(s, withTypes) {
+    const [si, ei] = lineRange(s);
+    const n = ei - si + 1;
+    const bl = blocks();
+    const items = [];
+    if (withTypes) {
+      const curType = bl[si].type;
+      items.push({ group: 'Tipo di elemento' }, {
+        chips: TYPES.map((t, k) => ({ dot: t.id, label: t.label, title: `${t.label} (${t.en}) — ⌥${k + 1}`, checked: t.id === curType, onClick: () => setType(t.id, s) }))
+      });
+    }
+    items.push({ group: n > 1 ? `${n} righe selezionate` : 'Riga' });
+    if (n > 1 || !s.collapsed) {
+      items.push({ icon: 'scissors', label: 'Taglia', onClick: () => cutSelection(s) });
+    }
+    items.push(
+      { icon: 'trash', label: n > 1 ? 'Elimina righe' : 'Elimina riga', hint: U.isMac ? '⌘⇧⌫' : 'Ctrl⇧⌫', onClick: () => deleteLines(si, ei) },
+      { icon: 'copy', label: n > 1 ? 'Duplica righe' : 'Duplica riga', onClick: () => duplicateLines(si, ei) },
+      { icon: 'arrowUp', label: 'Sposta su', hint: '⌥↑', disabled: si === 0, onClick: () => moveLines(s, -1) },
+      { icon: 'arrowDown', label: 'Sposta giù', hint: '⌥↓', disabled: ei === bl.length - 1, onClick: () => moveLines(s, 1) }
+    );
+    const sc = sceneOf(bl[si].id);
+    if (sc) items.push(...sceneItems(sc, false));
+    return items;
+  }
+
+  function cutSelection(s) {
+    const text = selectionText(s);
+    const done = () => { deleteSelection(s); U.toast('Testo tagliato', { action: 'Annulla', onAction: undo }); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, done);
+    else done();
+  }
+
+  function openLineMenu(anchor, withTypes) {
+    const s = (isFocused() && getSel()) || lastSel || (blocks()[0] && { startId: blocks()[0].id, startOff: 0, endId: blocks()[0].id, endOff: 0, collapsed: true });
+    if (!s || !get(s.startId)) return;
+    window.Ciak.App.popMenu(anchor, lineItems(s, withTypes), 'Riga e scena', { place: withTypes ? 'right' : 'below' });
   }
 
   /* ---------- suggerimenti (autocompletamento) ---------- */
@@ -511,10 +831,15 @@
     }
   }
 
+  function caretInCurrent() {
+    if (!isFocused()) return false;
+    const s = getSel();
+    return !!s && s.collapsed && s.startId === curId;
+  }
+
   function updateSuggestions() {
     const b = cur();
-    const focused = b && document.activeElement === txOf(b.id);
-    let items = focused ? computeSuggestions(b) : [];
+    let items = b && caretInCurrent() ? computeSuggestions(b) : [];
     if (ac.dismissed && b && ac.dismissed.id === b.id && ac.dismissed.text === b.text) items = [];
     ac.items = items;
     ac.forId = b ? b.id : null;
@@ -546,9 +871,10 @@
   function renderSuggestions() {
     const b = cur();
     const mobile = U.isMobile();
+    const active = !!b && caretInCurrent();
     // menu a tendina (computer)
     acBox.textContent = '';
-    const showAc = !mobile && ac.items.length && b;
+    const showAc = !mobile && active && ac.items.length;
     acBox.hidden = !showAc;
     if (showAc) {
       ac.items.forEach((it, i) => {
@@ -558,26 +884,24 @@
           onclick: () => acceptSuggestion(i)
         }, h('span', null, it.label), it.meta ? h('span', { class: 'ac-meta' }, it.meta) : null));
       });
-      const el = elOf(b.id);
       const pr = paper.getBoundingClientRect();
-      const er = el.firstChild.getBoundingClientRect();
+      const er = elOf(b.id).getBoundingClientRect();
       acBox.style.top = (er.bottom - pr.top + 4) + 'px';
       acBox.style.left = Math.max(8, Math.min(er.left - pr.left, pr.width - 260)) + 'px';
     }
     // estensioni personaggio (computer)
-    const isChar = b && b.type === 'character' && document.activeElement === txOf(b.id);
+    const isChar = active && b.type === 'character';
     extBox.hidden = mobile || !isChar;
     if (isChar && !mobile) {
-      const el = elOf(b.id);
       const pr = paper.getBoundingClientRect();
-      const er = el.getBoundingClientRect();
+      const er = elOf(b.id).getBoundingClientRect();
       extBox.style.top = (er.top - pr.top) + 'px';
       const up = b.text.toUpperCase();
       U.$$('button', extBox).forEach((btn) => btn.classList.toggle('on', up.includes('(' + btn.dataset.ext + ')')));
     }
     // riga suggerimenti (telefono)
     mSuggest.textContent = '';
-    if (mobile && b && document.activeElement === txOf(b.id)) {
+    if (mobile && active) {
       ac.items.forEach((it, i) => mSuggest.appendChild(h('button', { class: 'chip', onmousedown: noFocusSteal, onclick: () => acceptSuggestion(i) }, it.label)));
       if (b.type === 'character') {
         const up = b.text.toUpperCase();
@@ -608,16 +932,24 @@
     }, h('span', { class: 'more-label' }, 'Altro'), ' ▾');
     const moreWrap = h('div', { class: 'tmore' }, moreBtn, h('div', { class: 'tmore-pop' }, TYPES.filter((t) => t.extra).map(btn)));
     document.addEventListener('click', () => moreWrap.classList.remove('open'));
-    const types = h('div', { class: 'elbar-types' }, TYPES.filter((t) => !t.extra).map(btn), moreWrap);
+    const lineBtn = (cls) => h('button', {
+      class: 'icon-btn ' + cls, type: 'button', 'data-act': 'line-menu', title: 'Azioni: elimina, duplica, sposta righe e scene', 'aria-label': 'Azioni sulla riga e sulla scena',
+      onmousedown: noFocusSteal, onclick: (e) => openLineMenu(e.currentTarget, false)
+    }, U.icon('more', 18));
+    const types = h('div', { class: 'elbar-types' }, TYPES.filter((t) => !t.extra).map(btn), moreWrap, h('span', { class: 'elbar-sep' }), lineBtn('line-btn-desk'));
     const actions = h('div', { class: 'elbar-actions' },
       h('button', { class: 'icon-btn', 'data-act': 'undo', title: 'Annulla', onmousedown: noFocusSteal, onclick: undo }, U.icon('undo')),
-      h('button', { class: 'icon-btn', 'data-act': 'redo', title: 'Ripeti', onmousedown: noFocusSteal, onclick: redo }, U.icon('redo'))
-    );
+      h('button', { class: 'icon-btn', 'data-act': 'redo', title: 'Ripeti', onmousedown: noFocusSteal, onclick: redo }, U.icon('redo')),
+      lineBtn('line-btn-mob'));
     elbar.append(mSuggest, h('div', { class: 'elbar-row' }, types, actions));
   }
 
-  function hintFor(b) {
+  function hintFor(b, s) {
     if (!b) return 'Clicca su una riga per scrivere. <kbd>⌥1</kbd>…<kbd>⌥9</kbd> cambiano il tipo di elemento.';
+    if (s && !s.collapsed && s.startId !== s.endId) {
+      const [si, ei] = lineRange(s);
+      return `<span class="hint-cur">${ei - si + 1} righe selezionate</span><span><kbd>⌫</kbd> elimina</span><span><kbd>⌥1</kbd>…<kbd>⌥9</kbd> cambia tipo</span><span><kbd>⌥↑</kbd><kbd>⌥↓</kbd> sposta</span>`;
+    }
     const enter = b.text.trim() ? NEXT_ON_ENTER[b.type] : EMPTY_ENTER[b.type];
     return `<span class="hint-cur">${TYPE[b.type].label}</span>` +
       `<span><kbd>↵</kbd> ${TYPE[enter].label}</span>` +
@@ -625,11 +957,22 @@
       `<span><kbd>⇧⇥</kbd> ${TYPE[TAB_PREV[b.type]].label}</span>`;
   }
 
-  function onFocusChange() {
+  let selRaf = 0;
+  function onSelChangeSoon() {
+    if (selRaf) return;
+    selRaf = requestAnimationFrame(() => { selRaf = 0; onSelChange(); });
+  }
+
+  function onSelChange() {
+    if (!page) return;
+    const s = isFocused() ? getSel() : null;
+    if (s && get(s.startId)) { curId = s.startId; lastSel = s; }
     const b = cur();
-    U.$$('.el.focused', page).forEach((e) => { if (!b || e.dataset.id !== b.id) e.classList.remove('focused'); });
+    const focused = isFocused() && !!b;
+    U.$$('.el.focused', page).forEach((e) => { if (!focused || e.dataset.id !== b.id) e.classList.remove('focused'); });
     const el = b && elOf(b.id);
-    if (el) el.classList.add('focused');
+    if (el && focused) el.classList.add('focused');
+    if (b) page.setAttribute('autocapitalize', UPPER.has(b.type) ? 'characters' : 'sentences');
     // barra elementi
     U.$$('.tbtn[data-type]', elbar).forEach((x) => x.classList.toggle('on', !!b && x.dataset.type === b.type));
     const more = U.$('.tbtn.more', elbar);
@@ -646,16 +989,16 @@
         if (r.left < sr.left + 8 || r.right > sr.right - 8) strip.scrollLeft += r.left - sr.left - (sr.width - r.width) / 2;
       }
     }
-    if (hintEl) hintEl.innerHTML = hintFor(b);
-    // etichetta del tipo nel margine (computer)
-    if (el && !U.isMobile()) {
+    if (hintEl) hintEl.innerHTML = hintFor(focused ? b : null, s);
+    // etichetta del tipo nel margine (computer): cliccandola si apre il menu della riga
+    if (el && focused && !U.isMobile()) {
       const pr = paper.getBoundingClientRect();
       const er = el.getBoundingClientRect();
-      typeTag.textContent = TYPE[b.type].label;
+      typeTag.firstChild.textContent = TYPE[b.type].label;
       typeTag.dataset.type = b.type;
       typeTag.style.top = (er.top - pr.top) + 'px';
       typeTag.hidden = false;
-    } else typeTag.hidden = true;
+    } else if (!typeTag.matches(':hover')) typeTag.hidden = true;
     highlightCurrentScene();
     updateSuggestions();
   }
@@ -740,13 +1083,18 @@
     scenes.forEach((s) => {
       sceneList.appendChild(h('li', {
         class: 'scene-item', dataset: { id: s.id },
-        onclick: (e) => { if (e.target.closest('.grip')) return; jumpTo(s.id); }
+        onclick: (e) => { if (e.target.closest('.sc-tools')) return; jumpTo(s.id); }
       },
       h('span', { class: 'sc-num' + (colorOf[s.id] ? ' c-' + colorOf[s.id] : '') }, s.num),
       h('div', { class: 'sc-main' },
         h('div', { class: 'sc-head' }, s.text.toUpperCase() || 'Scena senza titolo'),
         s.synopsis ? h('div', { class: 'sc-syn' }, s.synopsis) : null),
-      h('button', { class: 'grip', title: 'Trascina per spostare la scena', 'aria-label': 'Sposta scena' }, U.icon('grip', 16))));
+      h('div', { class: 'sc-tools' },
+        h('button', {
+          class: 'sc-more', type: 'button', title: 'Azioni sulla scena', 'aria-label': 'Azioni sulla scena',
+          onclick: (e) => window.Ciak.App.popMenu(e.currentTarget, sceneItems(s.id, true), 'Scena ' + s.num, { place: 'right' })
+        }, U.icon('more', 16)),
+        h('button', { class: 'grip', type: 'button', title: 'Trascina per spostare la scena', 'aria-label': 'Sposta scena' }, U.icon('grip', 16)))));
     });
     highlightCurrentScene();
     // personaggi
@@ -776,31 +1124,13 @@
 
   function highlightCurrentScene() {
     if (!sceneList) return;
-    let sceneId = null;
-    const i = curId ? idx(curId) : -1;
-    for (let j = i; j >= 0; j--) if (blocks()[j].type === 'scene') { sceneId = blocks()[j].id; break; }
+    const sceneId = curId && get(curId) ? sceneOf(curId) : null;
     U.$$('.scene-item', sceneList).forEach((li) => li.classList.toggle('current', li.dataset.id === sceneId));
   }
 
   function jumpTo(id) {
     if (U.isMobile()) window.Ciak.App.closeSidebar();
     requestAnimationFrame(() => focusBlock(id, 'end', { center: true }));
-  }
-
-  function moveScene(id, beforeId) {
-    commitHistory();
-    const bl = blocks();
-    const starts = [];
-    bl.forEach((b, i) => { if (b.type === 'scene') starts.push(i); });
-    const k = starts.findIndex((s) => bl[s].id === id);
-    if (k < 0) return;
-    const start = starts[k], end = k + 1 < starts.length ? starts[k + 1] : bl.length;
-    const chunk = bl.splice(start, end - start);
-    let at = beforeId ? bl.findIndex((b) => b.id === beforeId) : bl.length;
-    if (at < 0) at = bl.length;
-    bl.splice(at, 0, ...chunk);
-    render();
-    changed(true);
   }
 
   /* ---------- API per le altre viste ---------- */
@@ -839,7 +1169,106 @@
     placeBar();
   }
 
-  /* ---------- inizializzazione ---------- */
+  /* ---------- eventi ---------- */
+
+  function onKeydown(e) {
+    if (e.isComposing || e.keyCode === 229) return;
+    const mod = e.metaKey || e.ctrlKey;
+    let s = getSel();
+    if (!s) return;
+    if (!get(s.startId)) { reconcile(); s = getSel(); if (!s) return; }
+    const b = get(s.startId);
+
+    if (ac.items.length && ac.forId === b.id && s.collapsed && !U.isMobile()) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); ac.index = (ac.index + 1) % ac.items.length; renderSuggestions(); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); ac.index = (ac.index - 1 + ac.items.length) % ac.items.length; renderSuggestions(); return; }
+      if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey && !mod && ac.index >= 0) { e.preventDefault(); acceptSuggestion(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); closeSuggestions(true); return; }
+    }
+
+    if (e.key === 'Enter' && !mod) { e.preventDefault(); handleEnter(s); return; }
+    if (e.key === 'Tab' && !mod && !e.altKey) { e.preventDefault(); setType((e.shiftKey ? TAB_PREV : TAB_NEXT)[b.type], s); return; }
+    if (mod && !e.altKey && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
+    if (mod && !e.altKey && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
+    if (mod && !e.altKey && ['b', 'i', 'u'].includes(e.key.toLowerCase())) { e.preventDefault(); return; }
+    if ((e.altKey || mod) && /^Digit[1-9]$/.test(e.code)) { e.preventDefault(); setType(TYPES[+e.code.slice(5) - 1].id, s); return; }
+    if (e.altKey && !mod && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); moveLines(s, e.key === 'ArrowUp' ? -1 : 1); return; }
+    if (mod && e.shiftKey && (e.key === 'Backspace' || e.key === 'Delete')) { e.preventDefault(); const [si, ei] = lineRange(s); deleteLines(si, ei); return; }
+    if (e.key === 'Escape' && !s.collapsed) { setSel(s.endId, s.endOff); }
+  }
+
+  function onBeforeInput(e) {
+    const s = getSel();
+    if (!s) return;
+    const t = e.inputType || '';
+    if (t === 'historyUndo') { e.preventDefault(); undo(); return; }
+    if (t === 'historyRedo') { e.preventDefault(); redo(); return; }
+    if (t === 'insertParagraph' || t === 'insertLineBreak') { e.preventDefault(); handleEnter(s); return; }
+    if (t.startsWith('format') || t === 'insertFromDrop' || t === 'deleteByDrag') { e.preventDefault(); return; }
+    if (!get(s.startId) || !get(s.endId)) return;
+    const multi = s.startId !== s.endId;
+    if (t.startsWith('delete')) {
+      if (multi) { e.preventDefault(); deleteSelection(s); return; }
+      if (s.collapsed) {
+        const b = get(s.startId);
+        if (t.endsWith('Backward') && s.startOff === 0) { e.preventDefault(); mergeBackward(b.id); return; }
+        if (t.endsWith('Forward') && s.startOff >= b.text.length) { e.preventDefault(); mergeForward(b.id); return; }
+      }
+      return;
+    }
+    if (multi && (t === 'insertText' || t === 'insertReplacementText') && e.data != null) {
+      e.preventDefault();
+      insertTextAt(deleteSelection(s), e.data);
+    }
+  }
+
+  function onInput() {
+    const sel = window.getSelection();
+    const el = sel.rangeCount ? lineOf(sel.focusNode) : null;
+    const n = blocks().length;
+    const structural = page.childNodes.length !== n || page.children.length !== n || !el || !el.dataset.id || !get(el.dataset.id);
+    let b;
+    if (structural) {
+      reconcile();
+      const s = getSel();
+      b = s && get(s.startId);
+    } else {
+      b = get(el.dataset.id);
+      const messy = Array.from(el.childNodes).some((x) => x.nodeType === 1 && x.nodeName !== 'BR') || /\n/.test(el.textContent);
+      if (messy) {
+        const p = pointOf(sel.focusNode, sel.focusOffset);
+        fill(el, el.textContent.replace(/\n/g, ' '));
+        if (p) setSel(p.id, p.off);
+      }
+      b.text = el.textContent;
+      if (!b.text && !el.querySelector('br')) { fill(el, ''); setSel(b.id, 0); }
+      applyType(el, b);
+    }
+    if (b) { curId = b.id; if (autoDetect(b)) return; }
+    changed(structural);
+    updateSuggestions();
+  }
+
+  function onPaste(e) {
+    e.preventDefault();
+    let s = getSel();
+    if (!s) return;
+    const raw = (e.clipboardData && e.clipboardData.getData('text/plain')) || '';
+    const text = raw.replace(/\r\n?/g, '\n');
+    if (!text) return;
+    const p = s.collapsed ? { id: s.startId, off: s.startOff } : deleteSelection(s);
+    if (!text.trim().includes('\n')) { insertTextAt(p, text.replace(/\n/g, ' ')); return; }
+    const parsed = Formats.parseFountain(text, { titlePage: false }).blocks;
+    if (parsed.length) insertBlocks(p, parsed);
+  }
+
+  function onCopy(e, cut) {
+    const s = getSel();
+    if (!s || s.collapsed) return;
+    e.preventDefault();
+    e.clipboardData.setData('text/plain', selectionText(s));
+    if (cut) deleteSelection(s);
+  }
 
   function init() {
     page = U.$('#page');
@@ -847,149 +1276,55 @@
     elbar = U.$('#elbar');
     hintEl = U.$('#hint');
     statsEl = U.$('#stats');
-    sidebar = U.$('#sidebar');
     sceneList = U.$('#scene-list');
     charList = U.$('#char-list');
-    typeTag = h('div', { class: 'type-tag', hidden: true });
+    page.contentEditable = CE_MODE;
+    page.spellcheck = true;
+    page.setAttribute('role', 'textbox');
+    page.setAttribute('aria-multiline', 'true');
+    page.setAttribute('aria-label', 'Copione');
+    typeTag = h('button', {
+      class: 'type-tag', type: 'button', hidden: true, title: 'Cambia tipo, elimina, duplica o sposta questa riga',
+      onmousedown: noFocusSteal, onclick: (e) => openLineMenu(e.currentTarget, true)
+    }, h('span'), h('span', { class: 'type-caret' }, '▾'));
     acBox = h('div', { class: 'ac', hidden: true, role: 'listbox' });
     extBox = h('div', { class: 'ext-chips', hidden: true },
       EXTENSIONS.map((x) => h('button', { type: 'button', dataset: { ext: x }, title: 'Estensione ' + x, onmousedown: noFocusSteal, onclick: () => toggleExtension(x) }, x)));
     paper.append(typeTag, acBox, extBox);
     buildBar();
 
-    page.addEventListener('focusin', (e) => {
-      const tx = e.target.closest('.tx');
-      if (!tx) return;
-      curId = tx.parentNode.dataset.id;
-      onFocusChange();
-    });
-    page.addEventListener('focusout', () => {
+    page.addEventListener('keydown', onKeydown);
+    page.addEventListener('beforeinput', onBeforeInput);
+    page.addEventListener('input', onInput);
+    page.addEventListener('paste', onPaste);
+    page.addEventListener('copy', (e) => onCopy(e, false));
+    page.addEventListener('cut', (e) => onCopy(e, true));
+    page.addEventListener('dragstart', (e) => e.preventDefault());
+    page.addEventListener('drop', (e) => e.preventDefault());
+    page.addEventListener('focus', onSelChange);
+    page.addEventListener('blur', () => {
       setTimeout(() => {
-        if (!page.contains(document.activeElement)) { ac.items = []; renderSuggestions(); typeTag.hidden = true; U.$$('.el.focused', page).forEach((e) => e.classList.remove('focused')); }
+        if (isFocused()) return;
+        ac.items = [];
+        renderSuggestions();
+        if (!typeTag.matches(':hover')) typeTag.hidden = true;
+        U.$$('.el.focused', page).forEach((x) => x.classList.remove('focused'));
       }, 0);
     });
+    document.addEventListener('selectionchange', () => { if (isFocused()) onSelChangeSoon(); });
 
-    page.addEventListener('keydown', (e) => {
-      const tx = e.target.closest && e.target.closest('.tx');
-      if (!tx || e.isComposing || e.keyCode === 229) return;
-      const mod = e.metaKey || e.ctrlKey;
-      const b = get(tx.parentNode.dataset.id);
-      if (!b) return;
-
-      if (ac.items.length && ac.forId === b.id && !U.isMobile()) {
-        if (e.key === 'ArrowDown') { e.preventDefault(); ac.index = (ac.index + 1) % ac.items.length; renderSuggestions(); return; }
-        if (e.key === 'ArrowUp') { e.preventDefault(); ac.index = (ac.index - 1 + ac.items.length) % ac.items.length; renderSuggestions(); return; }
-        if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey && !mod && ac.index >= 0) { e.preventDefault(); acceptSuggestion(); return; }
-        if (e.key === 'Escape') { e.preventDefault(); closeSuggestions(true); return; }
-      }
-
-      if (e.key === 'Enter' && !mod) { e.preventDefault(); handleEnter(tx); return; }
-      if (e.key === 'Tab' && !mod && !e.altKey) { e.preventDefault(); setType(b.id, (e.shiftKey ? TAB_PREV : TAB_NEXT)[b.type]); return; }
-      if (mod && !e.altKey && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
-      if (mod && !e.altKey && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
-      if ((e.altKey || mod) && /^Digit[1-9]$/.test(e.code)) { e.preventDefault(); setType(b.id, TYPES[+e.code.slice(5) - 1].id); return; }
-      if (e.key === 'Backspace' && !mod && !e.altKey) {
-        const o = getOffsets(tx);
-        if (o.start === 0 && o.end === 0) { e.preventDefault(); mergeBackward(tx); }
-        return;
-      }
-      if (e.key === 'Delete' && !mod) {
-        const o = getOffsets(tx);
-        if (o.start === o.end && o.end === tx.textContent.length) { e.preventDefault(); mergeForward(tx); }
-        return;
-      }
-      if (e.shiftKey || mod || e.altKey) return;
-      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-        const li = lineInfo(tx);
-        const dir = e.key === 'ArrowUp' ? -1 : 1;
-        if ((dir < 0 && li.first) || (dir > 0 && li.last)) { if (moveVert(dir, tx, li.rect)) e.preventDefault(); }
-        return;
-      }
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        const o = getOffsets(tx);
-        if (o.start !== o.end) return;
-        const i = idx(b.id);
-        if (e.key === 'ArrowLeft' && o.start === 0 && i > 0) { e.preventDefault(); focusBlock(blocks()[i - 1].id, 'end'); }
-        if (e.key === 'ArrowRight' && o.start === tx.textContent.length && i < blocks().length - 1) { e.preventDefault(); focusBlock(blocks()[i + 1].id, 'start'); }
-      }
-    });
-
-    page.addEventListener('beforeinput', (e) => {
-      const tx = e.target.closest && e.target.closest('.tx');
-      if (!tx) return;
-      switch (e.inputType) {
-        case 'insertParagraph':
-        case 'insertLineBreak':
-          e.preventDefault();
-          handleEnter(tx);
-          break;
-        case 'historyUndo': e.preventDefault(); undo(); break;
-        case 'historyRedo': e.preventDefault(); redo(); break;
-        case 'deleteContentBackward': {
-          const o = getOffsets(tx);
-          if (o.start === 0 && o.end === 0) { e.preventDefault(); mergeBackward(tx); }
-          break;
-        }
-        default:
-      }
-    });
-
-    page.addEventListener('input', (e) => {
-      const tx = e.target.closest && e.target.closest('.tx');
-      if (!tx) return;
-      const el = tx.parentNode;
-      const b = get(el.dataset.id);
-      if (!b) return;
-      const hasElements = Array.from(tx.childNodes).some((n) => n.nodeType === 1 && n.nodeName !== 'BR');
-      let text = tx.textContent;
-      if (hasElements || /\n/.test(text)) {
-        const o = getOffsets(tx);
-        text = text.replace(/\n/g, ' ');
-        tx.textContent = text;
-        setCaret(tx, o.start);
-      }
-      if (!text && tx.firstChild) tx.textContent = '';
-      b.text = text;
-      el.classList.toggle('is-empty', !text);
-      // riconoscimento automatico
-      if (b.type === 'action' && /^(int|ext|est)[.\s]|^(int\.?\/e[sx]t\.?|i\/e)[.\s]/i.test(text)) { setType(b.id, 'scene'); return; }
-      if (b.type === 'dialogue' && text === '(') { setType(b.id, 'parenthetical'); return; }
-      changed(false);
-      updateSuggestions();
-    });
-
-    page.addEventListener('paste', (e) => {
-      const tx = e.target.closest && e.target.closest('.tx');
-      if (!tx) return;
-      e.preventDefault();
-      const raw = (e.clipboardData && e.clipboardData.getData('text/plain')) || '';
-      const text = raw.replace(/\r\n?/g, '\n');
-      if (!text) return;
-      if (!text.trim().includes('\n')) { document.execCommand('insertText', false, text.replace(/\n/g, ' ')); return; }
-      const parsed = Formats.parseFountain(text, { titlePage: false }).blocks;
-      if (!parsed.length) return;
-      commitHistory();
-      const b = get(tx.parentNode.dataset.id);
-      let i = idx(b.id);
-      if (!b.text.trim()) { removeBlock(b.id); i--; }
-      let last = null;
-      parsed.forEach((p, k) => { last = insertAt(i + 1 + k, p.type, p.text); });
-      renumber();
-      focusBlock(last.id, 'end');
-      changed(true);
-      refreshSide();
-    });
-
-    // clic nello spazio vuoto del foglio: vai all'ultima riga
+    // clic sul margine del foglio: porta il cursore sulla riga più vicina
     paper.addEventListener('mousedown', (e) => {
-      if (e.target !== paper && e.target !== page) return;
-      const bl = blocks();
-      if (!bl.length) return;
-      const lastEl = page.lastElementChild;
-      if (lastEl && e.clientY > lastEl.getBoundingClientRect().bottom) {
-        e.preventDefault();
-        focusBlock(bl[bl.length - 1].id, 'end');
-      }
+      if (e.target !== paper) return;
+      const kids = page.children;
+      if (!kids.length) return;
+      e.preventDefault();
+      let target = null;
+      for (const el of kids) { if (e.clientY < el.getBoundingClientRect().bottom + 6) { target = el; break; } }
+      if (!target) target = kids[kids.length - 1];
+      const r = target.getBoundingClientRect();
+      const off = offsetFromPoint(target, U.clamp(e.clientX, r.left + 1, r.right - 1), U.clamp(e.clientY, r.top + 2, r.bottom - 2));
+      focusBlock(target.dataset.id, off == null ? (e.clientX < r.left ? 0 : 'end') : off);
     });
 
     // tab barra laterale
@@ -1010,12 +1345,12 @@
       window.visualViewport.addEventListener('resize', placeBar);
       window.visualViewport.addEventListener('scroll', placeBar);
     }
-    window.addEventListener('resize', () => { renderSuggestions(); onFocusChange(); });
+    window.addEventListener('resize', () => onSelChange());
   }
 
   window.Ciak.Editor = {
     TYPES, TYPE, init, render, show, invalidate, focusBlock, getScenes, appendScene, setBlockText,
     undo, redo, characterNames, estimate, fmtPages, renumber, refreshSide, resetHistory,
-    blocks, commitHistory
+    blocks, commitHistory, deleteScene, selectScene
   };
 })();

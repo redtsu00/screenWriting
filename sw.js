@@ -1,5 +1,5 @@
 /* Ciak — service worker: rende l'app disponibile anche offline */
-const CACHE = 'ciak-v1';
+const CACHE = 'ciak-v2';
 const ASSETS = [
   './',
   './index.html',
